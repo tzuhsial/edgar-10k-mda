@@ -1,3 +1,4 @@
-beautifulsoup4==4.6.0
-pathos==0.2.0
-requests==2.20.0
+beautifulsoup4==4.6.3
+docopt==0.6.2
+requests==2.20.1
+tqdm==4.28.1
