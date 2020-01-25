@@ -34,8 +34,7 @@ IndexRecord = namedtuple(
 
 def download_and_extract_index(opt):
     index_dir = opt["--index-dir"]
-    if not os.path.exists(index_dir):
-        os.makedirs(index_dir)
+    os.makedirs(index_dir, exist_ok=True)
 
     year_start = int(opt["--year-start"])
     year_end = int(opt["--year-end"])
@@ -52,8 +51,8 @@ def download_and_extract_index(opt):
             print("writing index to {}".format(form_idx_path))
             with open(form_idx_path, 'w') as fout:
                 fout.write(res.text)
-        except:
-            print("download index failed - {}".format(index_url))
+        except Exception as e:
+            print(e)
 
     def parse_row_to_record(row, fields_begin):
         record = []
@@ -101,10 +100,10 @@ def download_10k(opt):
     """Downloads 10k HTML and saves only text 
     """
     index_10k_path = opt["--index-10k-path"]
-    assert os.path.exists(index_10k_path)
+    if not os.path.exists(index_10k_path):
+        raise OSError("directory not found: {}".format(index_10k_path))
     form10k_dir = opt["--10k-dir"]
-    if not os.path.exists(form10k_dir):
-        os.makedirs(form10k_dir)
+    os.makedirs(form10k_dir, exist_ok=True)
 
     with open(index_10k_path, 'r') as fin:
         reader = csv.reader(
@@ -126,15 +125,15 @@ def download_10k(opt):
                 with open(text_path, 'w') as fout:
                     fout.write(text)
             except Exception as e:
-                print("download 10k failed - {} - {}".format(url, e))
+                print(e)
 
 
 def extract_mda(opt):
     form10k_dir = opt["--10k-dir"]
-    assert os.path.exists(form10k_dir)
+    if not os.path.exists(form10k_dir):
+        raise OSError("Directory not found: {}".format(form10k_dir))
     mda_dir = opt["--mda-dir"]
-    if not os.path.exists(mda_dir):
-        os.makedirs(mda_dir)
+    os.makedirs(mda_dir, exist_ok=True)
 
     for form10k_file in tqdm(sorted(glob(os.path.join(form10k_dir, "*.txt")))):
         print("extracting mda from form10k file {}".format(form10k_file))
@@ -154,13 +153,13 @@ def extract_mda(opt):
 
         if mda:
             filename = os.path.basename(form10k_file)
-            name, ext = os.path.splitext(filename)
+            name, _ = os.path.splitext(filename)
             mda_path = os.path.join(mda_dir, name + ".mda")
             print("writing mda to {}".format(mda_path))
             with open(mda_path, 'w') as fout:
                 fout.write(mda)
         else:
-            print("extract mda failed - {}".format(form10k_file))
+            print("parse_mda failed for - {}".format(form10k_file))
 
 
 def normalize_text(text):
