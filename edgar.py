@@ -1,173 +1,251 @@
-"""Edgar 10k MDA 
-Usage:
-    edgar.py download index [options]
-    edgar.py download 10k [options]
-    edgar.py extract mda [options]
-
-Options:
-    --index-dir=<file>          Directory to save index files [default: ./index]
-    --index-10k-path=<file>     CSV file to store 10k indices [default: ./index.10k.csv]
-    --10k-dir=<file>            Directory to save 10k files [default: ./form10k]
-    --mda-dir=<file>            Directory to save mda files [default: ./mda]
-    --year-start=<int>          Starting year for download index [default: 2016]
-    --year-end=<int>            Ending year for download index [default: 2016]
 """
+A standalone script to download and parse edgar 10k MDA section
+"""
+import argparse
 import csv
+import concurrent.futures
 import itertools
 import os
+import time
 import re
 import unicodedata
 from collections import namedtuple
+from functools import wraps
 from glob import glob
 
 import requests
 from bs4 import BeautifulSoup
-from docopt import docopt
-from tqdm import tqdm
 
 SEC_GOV_URL = 'https://www.sec.gov/Archives'
 FORM_INDEX_URL = os.path.join(
     SEC_GOV_URL, 'edgar', 'full-index', '{}', 'QTR{}', 'form.idx')
-IndexRecord = namedtuple(
-    "IndexRecord", ["form_type", "company_name", "cik", "date_filed", "filename"])
+
+# Used to combine form 10k index files. Adds URL column for lookup
+INDEX_HEADERS = ["Form Type", "Company Name",
+                 "CIK", "Date Filed", "File Name", "Url"]
 
 
-def download_and_extract_index(opt):
-    index_dir = opt["--index-dir"]
+def create_parser():
+    """Argument Parser"""
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-s', '--start_year', type=int, required=True,
+                        help="year to start")
+    parser.add_argument('-e', '--end_year', type=int, required=True,
+                        help="year to end")
+    parser.add_argument('-q', '--quarters', type=int, nargs="+",
+                        default=[1, 2, 3, 4], help="quarters to download for start to end years")
+    parser.add_argument('-d', '--data_dir', type=str,
+                        default="./data", help="path to save data")
+    return parser
+
+
+def main():
+    # Parse arguments
+    parser = create_parser()
+    args = parser.parse_args()
+
+    # Download indices
+    index_dir = os.path.join(args.data_dir, "index")
+    download_indices(args.start_year, args.end_year, args.quarters, index_dir)
+
+    # Combine indices to csv
+    combine_indices_to_csv(index_dir)
+
+    # Download forms
+    form_dir = os.path.join(args.data_dir, "form10k")
+    download_forms(index_dir, form_dir)
+
+    # Normalize forms
+    parsed_form_dir = os.path.join(args.data_dir, "form10k.parsed")
+    parse_html_multiprocess(form_dir, parsed_form_dir)
+
+    # Parse MDA
+    mda_dir = os.path.join(args.data_dir, "mda")
+    parse_mda_multiprocess(parsed_form_dir, mda_dir)
+
+
+def download_file(url: str, download_path: str):
+    """ Downloads file to disk
+    Args:
+        url (str)
+        download_path (str)
+    Returns:
+        True if success else False
+    """
+    try:
+        print("Requesting {}".format(url))
+        res = requests.get(url)
+        write_content(res.text, download_path)
+        print("Write to {}".format(download_path))
+        return True
+    except Exception as e:
+        print(e)
+        return False
+
+
+def write_content(content, output_path):
+    """ Writes content to file
+    Args:
+        content (str)
+        output_path (str): path to output file
+    """
+    with open(output_path, "w", encoding="utf-8") as fout:
+        fout.write(content)
+
+
+def timeit(f):
+    @wraps(f)
+    def wrapper(*args, **kw):
+        start_time = time.time()
+        result = f(*args, **kw)
+        end_time = time.time()
+        print("{} took {:.2f} seconds."
+              .format(f.__name__, end_time-start_time))
+        return result
+    return wrapper
+
+
+@timeit
+def download_indices(start_year: int, end_year: int, quarters: list, index_dir: str):
+    """ Downloads edgar 10k form indices with multiprocess
+    Args:
+        start_year (int): starting year
+        end_year (int): ending year
+    """
+    # Create output directory
     os.makedirs(index_dir, exist_ok=True)
 
-    year_start = int(opt["--year-start"])
-    year_end = int(opt["--year-end"])
+    # Prepare arguments
+    years = range(start_year, end_year+1)
+    urls = [FORM_INDEX_URL.format(year, qtr)
+            for year, qtr in itertools.product(years, quarters)]
+    download_paths = [os.path.join(index_dir, "year{}.qtr{}.idx".format(year, qtr))
+                      for year, qtr in itertools.product(years, quarters)]
 
-    for year, qtr in itertools.product(range(year_start, year_end+1), range(1, 5)):
-
-        index_url = FORM_INDEX_URL.format(year, qtr)
-        try:
-            print("request index - {}".format(index_url))
-            res = requests.get(index_url)
-            form_idx = "year{}_qtr{}.index".format(year, qtr)
-            form_idx_path = os.path.join(index_dir, form_idx)
-
-            print("writing index to {}".format(form_idx_path))
-            with open(form_idx_path, 'w') as fout:
-                fout.write(res.text)
-        except Exception as e:
-            print(e)
-
-    def parse_row_to_record(row, fields_begin):
-        record = []
-
-        for begin, end in zip(fields_begin[:], fields_begin[1:] + [len(row)]):
-            field = row[begin:end].rstrip()
-            field = field.strip('\"')
-            record.append(field)
-
-        return record
-
-    records = []
-    for index_file in sorted(glob(os.path.join(index_dir, "*.index"))):
-        print("Extracting 10k records from index {}".format(index_file))
-
-        with open(index_file, 'r') as fin:
-            # If arrived at 10-K section of forms
-            arrived = False
-
-            for row in fin.readlines():
-                if row.startswith("Form Type"):
-                    fields_begin = [row.find("Form Type"),
-                                    row.find("Company Name"),
-                                    row.find('CIK'),
-                                    row.find('Date Filed'),
-                                    row.find("File Name")]
-
-                elif row.startswith("10-K "):
-                    arrived = True
-                    rec = parse_row_to_record(row, fields_begin)
-                    records.append(IndexRecord(*rec))
-
-                elif arrived == True:
-                    break
-
-    index_10k_path = opt["--index-10k-path"]
-    with open(index_10k_path, 'w') as fout:
-        writer = csv.writer(fout, delimiter=',',
-                            quotechar='\"', quoting=csv.QUOTE_ALL)
-        for rec in records:
-            writer.writerow(tuple(rec))
+    # Download indices
+    for url, download_path in zip(urls, download_paths):
+        download_file(url, download_path)
 
 
-def download_10k(opt):
-    """Downloads 10k HTML and saves only text 
+@timeit
+def combine_indices_to_csv(index_dir):
+    """ Combines index files in index_dir csv file for lookup
+    Args:
+        index_dir (str)
     """
-    index_10k_path = opt["--index-10k-path"]
-    if not os.path.exists(index_10k_path):
-        raise OSError("directory not found: {}".format(index_10k_path))
-    form10k_dir = opt["--10k-dir"]
-    os.makedirs(form10k_dir, exist_ok=True)
+    # Reads all rows into memory
+    rows = []
+    for index_path in sorted(glob(os.path.join(index_dir, "*.idx"))):
+        with open(index_path, 'r') as fin:
+            for line in fin.readlines():
+                tokens = line.split()
+                if len(tokens) == 5:
+                    filename = tokens[-1]
+                    url = os.path.join(
+                        SEC_GOV_URL, filename).replace("\\", "/")
+                    row = tokens + [url]
+                    rows.append(row)
 
-    with open(index_10k_path, 'r') as fin:
-        reader = csv.reader(
-            fin, delimiter=',', quotechar='\"', quoting=csv.QUOTE_ALL)
+    # Write to output file
+    csv_file = os.path.join(index_dir, "combined.csv")
+    with open(csv_file, "w") as fout:
+        writer = csv.writer(fout, delimiter=",",
+                            quotechar='\"', quoting=csv.QUOTE_ALL)
+        writer.writerow(INDEX_HEADERS)
+        writer.writerows(rows)
 
+
+@timeit
+def download_forms(index_dir: str, form_dir: str):
+    """ Reads indices and download forms
+    Args:
+        index_dir (str)
+        form_dir (str)
+    """
+    # Create output directory
+    os.makedirs(form_dir, exist_ok=True)
+
+    # Prepare arguments
+    combined_csv = os.path.join(index_dir, "combined.csv")
+    urls = read_url_from_combined_csv(combined_csv)
+
+    download_paths = []
+    for url in urls:
+        download_name = "_".join(url.split('/')[-2:])
+        download_path = os.path.join(form_dir, download_name)
+        download_paths.append(download_path)
+
+    # Download forms
+    for url, download_path in zip(urls, download_paths):
+        download_file(url, download_path)
+
+
+def read_url_from_combined_csv(csv_path):
+    """ Reads url from csv file
+    Args:
+        csv_path (str): path to index file
+    Returns
+        urls: urls in combined csv
+    """
+    urls = []
+    with open(csv_path, 'r') as fin:
+        reader = csv.reader(fin, delimiter=",",
+                            quotechar='\"', quoting=csv.QUOTE_ALL)
+        # Skip header
+        next(reader)
         for row in reader:
-            _, _, _, _, filename = row
-            url = os.path.join(SEC_GOV_URL, filename).replace(
-                "\\", "/")
-            print('request 10k html - {}'.format(url))
-
-            try:
-                res = requests.get(url)
-                soup = BeautifulSoup(res.content, "html.parser")
-                text = soup.get_text("\n")
-                fname = '_'.join(url.split('/')[-2:])
-                text_path = os.path.join(form10k_dir, fname)
-                print("writing 10k text to {}".format(text_path))
-                with open(text_path, 'w') as fout:
-                    fout.write(text)
-            except Exception as e:
-                print(e)
+            url = row[-1]
+            urls.append(url)
+    return urls
 
 
-def extract_mda(opt):
-    form10k_dir = opt["--10k-dir"]
-    if not os.path.exists(form10k_dir):
-        raise OSError("Directory not found: {}".format(form10k_dir))
-    mda_dir = opt["--mda-dir"]
-    os.makedirs(mda_dir, exist_ok=True)
+def parse_html_multiprocess(form_dir, parsed_form_dir):
+    """ parse html with multiprocess
+    Args:
+        form_dir (str)
+    Returns:
+        parsed_form_dir (str)
+    """
+    # Create directory
+    os.makedirs(parsed_form_dir, exist_ok=True)
 
-    for form10k_file in tqdm(sorted(glob(os.path.join(form10k_dir, "*.txt")))):
-        print("extracting mda from form10k file {}".format(form10k_file))
+    # Prepare argument
+    form_paths = sorted(glob(os.path.join(form_dir, "*.txt")))
+    parsed_form_paths = []
+    for form_path in form_paths:
+        form_name = os.path.basename(form_path)
+        parsed_form_path = os.path.join(parsed_form_dir, form_name)
+        parsed_form_paths.append(parsed_form_path)
 
-        # Read form 10k
-        with open(form10k_file, 'r') as fin:
-            text = fin.read()
+    # Multiprocess
+    with concurrent.futures.ProcessPoolExecutor(max_workers=10) as executor:
+        for form_path, parsed_form_path in zip(form_paths, parsed_form_paths):
+            executor.submit(parse_html,
+                            form_path, parsed_form_path)
 
-        # Normalize
-        text = normalize_text(text)
 
-        # Find MDA section
-        mda, end = parse_mda(text)
-        # Parse second time if first parse results in index
-        if mda and len(mda.encode('utf-8')) < 1000:
-            mda, _ = parse_mda(text, start=end)
-
-        if mda:
-            filename = os.path.basename(form10k_file)
-            name, _ = os.path.splitext(filename)
-            mda_path = os.path.join(mda_dir, name + ".mda")
-            print("writing mda to {}".format(mda_path))
-            with open(mda_path, 'w') as fout:
-                fout.write(mda)
-        else:
-            print("parse_mda failed for - {}".format(form10k_file))
+def parse_html(input_file, output_file):
+    """ Parses text from html with BeautifulSoup
+    Args:
+        input_file (str)
+        output_file (str)
+    """
+    print("Parsing html {}".format(input_file))
+    with open(input_file, 'r') as fin:
+        content = fin.read()
+    # Parse html with BeautifulSoup
+    soup = BeautifulSoup(content, "html.parser")
+    text = soup.get_text("\n")
+    write_content(text, output_file)
+    # Log message
+    print("Write to {}".format(output_file))
 
 
 def normalize_text(text):
-    """Nomralize Text
+    """Normalize Text
     """
     text = unicodedata.normalize("NFKD", text)  # Normalize
-    text = '\n'.join(
-        text.splitlines())  # Let python take care of unicode break lines
+    text = '\n'.join(text.splitlines())  # Unicode break lines
 
     # Convert to upper
     text = text.upper()  # Convert to upper
@@ -196,16 +274,66 @@ def normalize_text(text):
     return text
 
 
-def parse_mda(text, start=0):
-    debug = False
-    """Parse normalized text 
+def parse_mda_multiprocess(form_dir: str, mda_dir: str):
+    """ Parse MDA section from forms with multiprocess
+    Args:
+        form_dir (str)
+        mda_dir (str)
     """
+    # Create output directory
+    os.makedirs(mda_dir, exist_ok=True)
+
+    # Prepare arguments
+    form_paths = sorted(glob(os.path.join(form_dir, "*")))
+    mda_paths = []
+    for form_path in form_paths:
+        form_name = os.path.basename(form_path)
+        root, _ = os.path.splitext(form_name)
+        mda_path = os.path.join(mda_dir, '{}.mda'.format(root))
+        mda_paths.append(mda_path)
+
+    # Multiprocess
+    with concurrent.futures.ProcessPoolExecutor(max_workers=10) as executor:
+        for form_path, mda_path in zip(form_paths, mda_paths):
+            executor.submit(parse_mda, form_path, mda_path)
+
+
+def parse_mda(form_path, mda_path):
+    """ Reads form and parses mda
+    Args:
+        form_path (str)
+        mda_path (str)
+    """
+    # Read
+    print("Parse MDA {}".format(form_path))
+    with open(form_path, "r") as fin:
+        text = fin.read()
+
+    # Normalize text here
+    text = normalize_text(text)
+
+    # Parse MDA
+    mda, end = find_mda_from_text(text)
+    # Parse second time if first parse results in index
+    if mda and len(mda.encode('utf-8')) < 1000:
+        mda, _ = find_mda_from_text(text, start=end)
+
+    if mda:
+        print("Write MDA to {}".format(mda_path))
+        write_content(mda, mda_path)
+    else:
+        print("Parse MDA failed {}".format(form_path))
+
+
+def find_mda_from_text(text, start=0):
+    """Find MDA section from normalized text
+    Args:
+        text (str)s
+    """
+    debug = False
 
     mda = ""
     end = 0
-    """
-        Parsing Rules
-    """
 
     # Define start & end signal for parsing
     item7_begins = [
@@ -216,7 +344,7 @@ def parse_mda(text, start=0):
         item7_ends.append('\nITEM 7')  # Case: ITEM 7A does not exist
     item8_begins = ['\nITEM 8']
     """
-        Parsing code section
+    Parsing code section
     """
     text = text[start:]
 
@@ -254,11 +382,4 @@ def parse_mda(text, start=0):
 
 
 if __name__ == "__main__":
-    opt = docopt(__doc__)
-    print(opt)
-    if opt["download"] and opt["index"]:
-        download_and_extract_index(opt)
-    elif opt["download"] and opt["10k"]:
-        download_10k(opt)
-    elif opt["extract"] and opt["mda"]:
-        extract_mda(opt)
+    main()
