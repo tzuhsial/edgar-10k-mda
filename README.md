@@ -1,31 +1,32 @@
 # edgar-10k-mda
 
 This repo contains some python code I used to download form10k filings  from [EDGAR database](https://www.sec.gov/edgar.shtml), 
-and then extract the MDA section from the downloaded form10k filings heuristically
+and then extract the MDA section from the downloaded form10k filings(in a brute force way).
 
-### Usage
+### Getting Started 
 
-Specify the starting year and end year and the directory to save outputs.
-By default, indices, forms and mdas will be saved to `./data`
+The whole workflow contains 3 steps
+- Step 1. Download index of the form 10k filings
+- Step 2. Using the index from Step 1., download the form 10k filings(html) and parse text out of html using [BeautifulSoup](https://www.crummy.com/software/BeautifulSoup/bs4/doc/)
+- Step 3. Parse the MDA section of form10k text from Step 2.
 
+
+Below are the commands with arguments to run each step 
+
+Step 1. Download index of the form 10k filings with start year and end year and save to 'index-10-path'. Raw index files with also be saved to '--index-dir=./index'.
 ```bash
-# Downloads and parses MDA section from 2016 to 2016
-python edgar.py --start_year=2016 --end_year=2016
+python edgar.py download index --year-start=2016 --year-end=2016 --index-dir=./index  --index-10k-path=index.10k.csv
 ```
 
-### Notes
+Step 2. Download Form 10k filings using '--index-10k-path' from Step 1, parse with BeautifulSoup and save to '--10k-dir'
+```bash
+python edgar.py download 10k --index-10k-path=./index.10k.csv --10k-dir=./form10k
+```
 
-- MDA section is parsed heuristically, and may not work for all forms. You'll probably need to modify the `find_mda_from_text` function for coverage.
-- You also might need to modify `normalize_text` function for MDA parsing.
-
-### Workflow
-
-The code runs the extraction in the following steps
-1. Download indices for form 10k to `./data/index`
-2. Combines all indices into a single csv `./data/index/combined.csv`
-3. From Step2 combined csv, downloads all form 10k to `./data/form10k`
-4. Parses the html forms with BeautifulSoup to `./data/form10k.parsed`
-5. Parses MDA section to `./data/mda`
+Step 3. Parse the MDA section of the downloaded text in '--10k-dir' and save to '--mda-dir'
+```bash
+python edgar.py extract mda --10k-dir=./form10k --mda-dir=./mda
+```
 
 ### Installation
 
