@@ -1,4 +1,2 @@
-beautifulsoup4==4.6.3
-docopt==0.6.2
-requests==2.20.1
-tqdm==4.28.1
+beautifulsoup4
+requests

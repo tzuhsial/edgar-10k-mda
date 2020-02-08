@@ -1,5 +1,3 @@
-data
-*.index
-*.txt
-*.mda
-parsing.log
+activate.sh
+.vscode
+__pycache__

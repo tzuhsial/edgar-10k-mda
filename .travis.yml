@@ -1,0 +1,10 @@
+language: python
+python:
+  - "3.6"      # current default Python on Travis CI
+# command to install dependencies
+install:
+  - pip install -r requirements.txt
+# command to run tests
+script:
+  - pytest
+  - python edgar.py -s 2016 -e 2016 -q 1 --debug --overwrite
