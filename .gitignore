@@ -1,6 +1,9 @@
 # Custom
-.DS_store
 data
+edgar/config.py
+
+# Developer Setup
+.DS_store
 .vscode
 
 # Byte-compiled / optimized / DLL files

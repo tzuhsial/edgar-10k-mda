@@ -1,6 +1,6 @@
 # edgar-10k-mda
 
-This repo contains some python code I used to download form10k filings  from [EDGAR database](https://www.sec.gov/edgar.shtml), 
+This repo contains some python code I used to download form10k filings  from [EDGAR database](https://www.sec.gov/edgar.shtml),
 and then extract the MDA section from the downloaded form10k filings heuristically
 
 
@@ -55,3 +55,8 @@ The code runs the extraction in the following steps
 
 - MDA section is parsed heuristically, and may not work for all forms. You'll probably need to modify the `find_mda_from_text` function for coverage.
 - You also might need to modify `normalize_text` function for MDA parsing.
+
+
+### TODO
+- Implement rate limiter to comply with SEC guidelines
+- Handle throttle use case
