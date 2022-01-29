@@ -23,9 +23,9 @@ def create_parser():
     description = "Script to download Edgar index files"
     example_usage = ""
     parser = argparse.ArgumentParser(description=description, epilog=example_usage)
-    parser.add_argument("-i", "--index-dir", type=str, required=True, help="directory to input indices")
-    parser.add_argument("-o", "--output-dir", type=str, required=True, help="directory to save forms")
-    parser.add_argument("-f", "--form-type", type=str, default='10K', choices=SUPPORTED_FORM_TYPES, help="supported form types")
+    parser.add_argument("-i", "--index-file", type=str, required=True, help="index files to parse and download, can use pattern matching")
+    parser.add_argument("-o", "--output-dir", type=str, required=True, help="output directory to save forms")
+    parser.add_argument("-f", "--form-type", type=str, default='10-K', choices=SUPPORTED_FORM_TYPES, help="supported form types")
     parser.add_argument(
         "--overwrite",
         action="store_true",
@@ -42,7 +42,7 @@ def main():
 
     # create directory and download forms
     os.makedirs(args.output_dir, exist_ok=True)
-    for form_url, cik, form_name in form_url_iterator(args.input_dir, args.form_type):
+    for form_url, cik, form_name in form_url_iterator(args.index_file, args.form_type):
         cik_dir = os.path.join(args.output_dir, cik)
         os.makedirs(cik_dir, exist_ok=True)
         download_path = os.path.join(cik_dir, form_name)

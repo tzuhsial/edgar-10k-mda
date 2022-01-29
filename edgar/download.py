@@ -12,7 +12,7 @@ import requests
 from ratelimit import limits, sleep_and_retry
 
 from .config import REQUESTS_PER_SECOND, HEADERS
-from .constants import FORM_INDEX_URL_TEMPLATE
+from .constants import FORM_INDEX_URL_TEMPLATE, SEC_GOV_URL
 from .util import timeit, write_content
 
 
@@ -59,7 +59,7 @@ def index_url_iterator(start_year: int, end_year: int, quarters: list):
         yield FORM_INDEX_URL_TEMPLATE.format(year, qtr), output_name
 
 
-def form_url_iterator(index_dir: str, form_type: str):
+def form_url_iterator(index_file: str, form_type: str):
     """
     Iterator that yields url paths for form files
 
@@ -67,7 +67,8 @@ def form_url_iterator(index_dir: str, form_type: str):
         (form_url, cik, form_name)
 
     """
-    for index_path in sorted(glob(os.path.join(index_dir, "*.idx"))):
+    for index_path in sorted(glob(index_file, recursive=True)):
+        print(f"Reading {index_path}")
         with open(index_path, "r") as fin:
             arrived = False
             fields_begin = None
@@ -83,9 +84,26 @@ def form_url_iterator(index_dir: str, form_type: str):
                 elif line.startswith(f"{form_type} "):
                     assert fields_begin is not None
                     arrived = True
+                    row = parse_line_to_record(line, fields_begin)
                     filename = row[-1]
                     form_url = os.path.join(SEC_GOV_URL, filename).replace("\\", "/")
                     cik, output_name = filename.split('/')[-2:]
                     yield form_url, cik, output_name
                 elif arrived:  # index files are sorted properly, so we don't need this
                     break
+
+def parse_line_to_record(line, fields_begin):
+    """
+    Example:
+    10-K        1347 Capital Corp                                             1606163     2016-03-21  edgar/data/1606163/0001144204-16-089184.txt
+
+    Returns:
+    ["10-K", "1347 Capital Corp","160613", "2016-03-21", "edgar/data/1606163/0001144204-16-089184.txt"]
+    """
+    record = []
+    fields_indices = fields_begin + [len(line)]
+    for begin, end in zip(fields_indices[:-1], fields_indices[1:]):
+        field = line[begin:end].rstrip()
+        field = field.strip('\"')
+        record.append(field)
+    return record
