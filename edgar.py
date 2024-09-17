@@ -1,6 +1,7 @@
 """
 A standalone script to download and parse edgar 10k MDA section
 """
+
 import argparse
 import csv
 import concurrent.futures
@@ -9,37 +10,52 @@ import os
 import time
 import re
 import unicodedata
-from collections import namedtuple
 from functools import wraps
 from glob import glob
 
 import requests
+from ratelimit import limits, sleep_and_retry
 from bs4 import BeautifulSoup
 
-SEC_GOV_URL = 'https://www.sec.gov/Archives'
+headers = {
+    "User-Agent": "YOUR EMAIL HERE",
+    "Accept-Encoding": "gzip",
+    "Host": "www.sec.gov",
+}
+
+SEC_GOV_URL = "https://www.sec.gov/Archives"
 FORM_INDEX_URL = os.path.join(
-    SEC_GOV_URL, 'edgar', 'full-index', '{}', 'QTR{}', 'form.idx')
+    SEC_GOV_URL, "edgar", "full-index", "{}", "QTR{}", "form.idx"
+)
 
 # Used to combine form 10k index files. Adds URL column for lookup
-INDEX_HEADERS = ["Form Type", "Company Name",
-                 "CIK", "Date Filed", "File Name", "Url"]
+INDEX_HEADERS = ["Form Type", "Company Name", "CIK", "Date Filed", "File Name", "Url"]
 
 
 def create_parser():
     """Argument Parser"""
     parser = argparse.ArgumentParser()
-    parser.add_argument('-s', '--start_year', type=int, required=True,
-                        help="year to start")
-    parser.add_argument('-e', '--end_year', type=int, required=True,
-                        help="year to end")
-    parser.add_argument('-q', '--quarters', type=int, nargs="+",
-                        default=[1, 2, 3, 4], help="quarters to download for start to end years")
-    parser.add_argument('-d', '--data_dir', type=str,
-                        default="./data", help="path to save data")
-    parser.add_argument('--overwrite', action="store_true",
-                        help="If True, overwrites downloads and processed files.")
-    parser.add_argument('--debug', action="store_true",
-                        help="Debug mode")
+    parser.add_argument(
+        "-s", "--start_year", type=int, required=True, help="year to start"
+    )
+    parser.add_argument("-e", "--end_year", type=int, required=True, help="year to end")
+    parser.add_argument(
+        "-q",
+        "--quarters",
+        type=int,
+        nargs="+",
+        default=[1, 2, 3, 4],
+        help="quarters to download for start to end years",
+    )
+    parser.add_argument(
+        "-d", "--data_dir", type=str, default="./data", help="path to save data"
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="If True, overwrites downloads and processed files.",
+    )
+    parser.add_argument("--debug", action="store_true", help="Debug mode")
     return parser
 
 
@@ -50,8 +66,9 @@ def main():
 
     # Download indices
     index_dir = os.path.join(args.data_dir, "index")
-    download_indices(args.start_year, args.end_year,
-                     args.quarters, index_dir, args.overwrite)
+    download_indices(
+        args.start_year, args.end_year, args.quarters, index_dir, args.overwrite
+    )
 
     # Combine indices to csv
     combine_indices_to_csv(index_dir)
@@ -69,8 +86,14 @@ def main():
     parse_mda_multiprocess(parsed_form_dir, mda_dir, args.overwrite)
 
 
+CALLS = 10
+RATE_LIMIT = 1
+
+
+@sleep_and_retry
+@limits(calls=CALLS, period=RATE_LIMIT)
 def download_file(url: str, download_path: str, overwrite: bool = False):
-    """ Downloads file to disk
+    """Downloads file to disk
     Args:
         url (str)
         download_path (str)
@@ -82,7 +105,7 @@ def download_file(url: str, download_path: str, overwrite: bool = False):
         return True
     try:
         print("Requesting {}".format(url))
-        res = requests.get(url)
+        res = requests.get(url, headers=headers)
         write_content(res.text, download_path)
         print("Write to {}".format(download_path))
         return True
@@ -92,7 +115,7 @@ def download_file(url: str, download_path: str, overwrite: bool = False):
 
 
 def write_content(content, output_path):
-    """ Writes content to file
+    """Writes content to file
     Args:
         content (str)
         output_path (str): path to output file
@@ -107,15 +130,17 @@ def timeit(f):
         start_time = time.time()
         result = f(*args, **kw)
         end_time = time.time()
-        print("{} took {:.2f} seconds."
-              .format(f.__name__, end_time-start_time))
+        print("{} took {:.2f} seconds.".format(f.__name__, end_time - start_time))
         return result
+
     return wrapper
 
 
 @timeit
-def download_indices(start_year: int, end_year: int, quarters: list, index_dir: str, overwrite: bool):
-    """ Downloads edgar 10k form indices with multiprocess
+def download_indices(
+    start_year: int, end_year: int, quarters: list, index_dir: str, overwrite: bool
+):
+    """Downloads edgar 10k form indices with multiprocess
     Args:
         start_year (int): starting year
         end_year (int): ending year
@@ -124,21 +149,26 @@ def download_indices(start_year: int, end_year: int, quarters: list, index_dir: 
     os.makedirs(index_dir, exist_ok=True)
 
     # Prepare arguments
-    years = range(start_year, end_year+1)
-    urls = [FORM_INDEX_URL.format(year, qtr)
-            for year, qtr in itertools.product(years, quarters)]
-    download_paths = [os.path.join(index_dir, "year{}.qtr{}.idx".format(year, qtr))
-                      for year, qtr in itertools.product(years, quarters)]
+    years = range(start_year, end_year + 1)
+    urls = [
+        FORM_INDEX_URL.format(year, qtr)
+        for year, qtr in itertools.product(years, quarters)
+    ]
+    download_paths = [
+        os.path.join(index_dir, "year{}.qtr{}.idx".format(year, qtr))
+        for year, qtr in itertools.product(years, quarters)
+    ]
 
     # Download indices
-    for url, download_path in zip(urls, download_paths):
-        download_file(url, download_path, overwrite)
+    with concurrent.futures.ThreadPoolExecutor(10) as executor:
+        for url, download_path in zip(urls, download_paths):
+            executor.submit(download_file, url, download_path)
 
 
 def parse_line_to_record(line, fields_begin):
     """
     Example:
-    10-K        1347 Capital Corp                                             1606163     2016-03-21  edgar/data/1606163/0001144204-16-089184.txt 
+    10-K        1347 Capital Corp                                             1606163     2016-03-21  edgar/data/1606163/0001144204-16-089184.txt
 
     Returns:
     ["10-K", "1347 Capital Corp","160613", "2016-03-21", "edgar/data/1606163/0001144204-16-089184.txt"]
@@ -147,38 +177,39 @@ def parse_line_to_record(line, fields_begin):
     fields_indices = fields_begin + [len(line)]
     for begin, end in zip(fields_indices[:-1], fields_indices[1:]):
         field = line[begin:end].rstrip()
-        field = field.strip('\"')
+        field = field.strip('"')
         record.append(field)
     return record
 
 
 @timeit
 def combine_indices_to_csv(index_dir):
-    """ Combines index files in index_dir csv file for lookup
+    """Combines index files in index_dir csv file for lookup
     Args:
         index_dir (str)
     """
     # Reads all rows into memory
     rows = []
     for index_path in sorted(glob(os.path.join(index_dir, "*.idx"))):
-        with open(index_path, 'r') as fin:
+        with open(index_path, "r") as fin:
             arrived = False
             fields_begin = None
             for line in fin.readlines():
                 if line.startswith("Form Type"):
-                    fields_begin = [line.find("Form Type"),
-                                    line.find("Company Name"),
-                                    line.find('CIK'),
-                                    line.find('Date Filed'),
-                                    line.find("File Name")]
+                    fields_begin = [
+                        line.find("Form Type"),
+                        line.find("Company Name"),
+                        line.find("CIK"),
+                        line.find("Date Filed"),
+                        line.find("File Name"),
+                    ]
                     print(fields_begin)
                 elif line.startswith("10-K "):
                     assert fields_begin is not None
                     arrived = True
                     row = parse_line_to_record(line, fields_begin)
                     filename = row[-1]
-                    url = os.path.join(
-                        SEC_GOV_URL, filename).replace("\\", "/")
+                    url = os.path.join(SEC_GOV_URL, filename).replace("\\", "/")
                     row = row + [url]
                     rows.append(row)
                 elif arrived:
@@ -187,15 +218,16 @@ def combine_indices_to_csv(index_dir):
     # Write to output file
     csv_file = os.path.join(index_dir, "combined.csv")
     with open(csv_file, "w") as fout:
-        writer = csv.writer(fout, delimiter=",",
-                            quotechar='\"', quoting=csv.QUOTE_ALL)
+        writer = csv.writer(fout, delimiter=",", quotechar='"', quoting=csv.QUOTE_ALL)
         writer.writerow(INDEX_HEADERS)
         writer.writerows(rows)
 
 
 @timeit
-def download_forms(index_dir: str, form_dir: str, overwrite: bool = False, debug: bool = False):
-    """ Reads indices and download forms
+def download_forms(
+    index_dir: str, form_dir: str, overwrite: bool = False, debug: bool = False
+):
+    """Reads indices and download forms
     Args:
         index_dir (str)
         form_dir (str)
@@ -210,7 +242,7 @@ def download_forms(index_dir: str, form_dir: str, overwrite: bool = False, debug
 
     download_paths = []
     for url in urls:
-        download_name = "_".join(url.split('/')[-2:])
+        download_name = "_".join(url.split("/")[-2:])
         download_path = os.path.join(form_dir, download_name)
         download_paths.append(download_path)
 
@@ -220,23 +252,21 @@ def download_forms(index_dir: str, form_dir: str, overwrite: bool = False, debug
         download_paths = download_paths[:10]
 
     # Download forms
-    nforms = len(download_paths)
-    for idx, (url, download_path) in enumerate(zip(urls, download_paths), 1):
-        print("Download form {}/{}".format(idx, nforms))
-        download_file(url, download_path, overwrite)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        for url, download_path in zip(urls, download_paths):
+            executor.submit(download_file, url, download_path, overwrite)
 
 
 def read_url_from_combined_csv(csv_path):
-    """ Reads url from csv file
+    """Reads url from csv file
     Args:
         csv_path (str): path to index file
     Returns
         urls: urls in combined csv
     """
     urls = []
-    with open(csv_path, 'r') as fin:
-        reader = csv.reader(fin, delimiter=",",
-                            quotechar='\"', quoting=csv.QUOTE_ALL)
+    with open(csv_path, "r") as fin:
+        reader = csv.reader(fin, delimiter=",", quotechar='"', quoting=csv.QUOTE_ALL)
         # Skip header
         next(reader)
         for row in reader:
@@ -246,7 +276,7 @@ def read_url_from_combined_csv(csv_path):
 
 
 def parse_html_multiprocess(form_dir, parsed_form_dir, overwrite=False):
-    """ parse html with multiprocess
+    """parse html with multiprocess
     Args:
         form_dir (str)
     Returns:
@@ -266,12 +296,11 @@ def parse_html_multiprocess(form_dir, parsed_form_dir, overwrite=False):
     # Multiprocess
     with concurrent.futures.ProcessPoolExecutor(max_workers=10) as executor:
         for form_path, parsed_form_path in zip(form_paths, parsed_form_paths):
-            executor.submit(parse_html,
-                            form_path, parsed_form_path, overwrite)
+            executor.submit(parse_html, form_path, parsed_form_path, overwrite)
 
 
 def parse_html(input_file, output_file, overwrite=False):
-    """ Parses text from html with BeautifulSoup
+    """Parses text from html with BeautifulSoup
     Args:
         input_file (str)
         output_file (str)
@@ -281,7 +310,7 @@ def parse_html(input_file, output_file, overwrite=False):
         return
 
     print("Parsing html {}".format(input_file))
-    with open(input_file, 'r') as fin:
+    with open(input_file, "r") as fin:
         content = fin.read()
     # Parse html with BeautifulSoup
     soup = BeautifulSoup(content, "html.parser")
@@ -292,40 +321,39 @@ def parse_html(input_file, output_file, overwrite=False):
 
 
 def normalize_text(text):
-    """Normalize Text
-    """
+    """Normalize Text"""
     text = unicodedata.normalize("NFKD", text)  # Normalize
-    text = '\n'.join(text.splitlines())  # Unicode break lines
+    text = "\n".join(text.splitlines())  # Unicode break lines
 
     # Convert to upper
     text = text.upper()  # Convert to upper
 
     # Take care of breaklines & whitespaces combinations due to beautifulsoup parsing
-    text = re.sub(r'[ ]+\n', '\n', text)
-    text = re.sub(r'\n[ ]+', '\n', text)
-    text = re.sub(r'\n+', '\n', text)
+    text = re.sub(r"[ ]+\n", "\n", text)
+    text = re.sub(r"\n[ ]+", "\n", text)
+    text = re.sub(r"\n+", "\n", text)
 
     # To find MDA section, reformat item headers
-    text = text.replace('\n.\n', '.\n')  # Move Period to beginning
+    text = text.replace("\n.\n", ".\n")  # Move Period to beginning
 
-    text = text.replace('\nI\nTEM', '\nITEM')
-    text = text.replace('\nITEM\n', '\nITEM ')
-    text = text.replace('\nITEM  ', '\nITEM ')
+    text = text.replace("\nI\nTEM", "\nITEM")
+    text = text.replace("\nITEM\n", "\nITEM ")
+    text = text.replace("\nITEM  ", "\nITEM ")
 
-    text = text.replace(':\n', '.\n')
+    text = text.replace(":\n", ".\n")
 
     # Math symbols for clearer looks
-    text = text.replace('$\n', '$')
-    text = text.replace('\n%', '%')
+    text = text.replace("$\n", "$")
+    text = text.replace("\n%", "%")
 
     # Reformat
-    text = text.replace('\n', '\n\n')  # Reformat by additional breakline
+    text = text.replace("\n", "\n\n")  # Reformat by additional breakline
 
     return text
 
 
 def parse_mda_multiprocess(form_dir: str, mda_dir: str, overwrite: bool = False):
-    """ Parse MDA section from forms with multiprocess
+    """Parse MDA section from forms with multiprocess
     Args:
         form_dir (str)
         mda_dir (str)
@@ -339,7 +367,7 @@ def parse_mda_multiprocess(form_dir: str, mda_dir: str, overwrite: bool = False)
     for form_path in form_paths:
         form_name = os.path.basename(form_path)
         root, _ = os.path.splitext(form_name)
-        mda_path = os.path.join(mda_dir, '{}.mda'.format(root))
+        mda_path = os.path.join(mda_dir, "{}.mda".format(root))
         mda_paths.append(mda_path)
 
     # Multiprocess
@@ -349,7 +377,7 @@ def parse_mda_multiprocess(form_dir: str, mda_dir: str, overwrite: bool = False)
 
 
 def parse_mda(form_path, mda_path, overwrite=False):
-    """ Reads form and parses mda
+    """Reads form and parses mda
     Args:
         form_path (str)
         mda_path (str)
@@ -368,7 +396,7 @@ def parse_mda(form_path, mda_path, overwrite=False):
     # Parse MDA
     mda, end = find_mda_from_text(text)
     # Parse second time if first parse results in index
-    if mda and len(mda.encode('utf-8')) < 1000:
+    if mda and len(mda.encode("utf-8")) < 1000:
         mda, _ = find_mda_from_text(text, start=end)
 
     if mda:
@@ -389,13 +417,11 @@ def find_mda_from_text(text, start=0):
     end = 0
 
     # Define start & end signal for parsing
-    item7_begins = [
-        '\nITEM 7.', '\nITEM 7 –', '\nITEM 7:', '\nITEM 7 ', '\nITEM 7\n'
-    ]
-    item7_ends = ['\nITEM 7A']
+    item7_begins = ["\nITEM 7.", "\nITEM 7 –", "\nITEM 7:", "\nITEM 7 ", "\nITEM 7\n"]
+    item7_ends = ["\nITEM 7A"]
     if start != 0:
-        item7_ends.append('\nITEM 7')  # Case: ITEM 7A does not exist
-    item8_begins = ['\nITEM 8']
+        item7_ends.append("\nITEM 7")  # Case: ITEM 7A does not exist
+    item8_begins = ["\nITEM 8"]
     """
     Parsing code section
     """
